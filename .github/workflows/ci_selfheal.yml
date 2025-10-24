@@ -1,19 +1,20 @@
----
 name: CI - Self-Healing Pipeline
+
 on:
   push:
-    branches:
-      - main
+    branches: [ main ]
   pull_request:
-    branches:
-      - main
+    branches: [ main ]
+
 permissions:
-  actions: write
+  actions: write     # allow rerun of workflow
   contents: read
-  issues: write
+  issues: write      # allow opening an issue
   checks: write
+
 env:
   RUNNER_TEMP: /tmp
+
 jobs:
   test:
     name: Run simulated app (build/test)
@@ -23,13 +24,16 @@ jobs:
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
+
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: "3.11"
+          python-version: '3.11'
+
       - name: Install deps (if any)
         run: |
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
       - name: Run simulate_app
         id: run_test
         run: |
@@ -41,12 +45,14 @@ jobs:
           else
             echo "result=failure" >> $GITHUB_OUTPUT
           fi
+
       - name: Upload raw run output
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: raw-run-output
           path: run_output.log
+
   self_heal:
     name: Self-healing diagnostics & remediation
     needs: test
@@ -55,15 +61,17 @@ jobs:
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
+
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: "3.11"
-      - name: Install deps for diagnoser
-        run: >
-          pip install --upgrade pip
+          python-version: '3.11'
 
+      - name: Install deps for diagnoser
+        run: |
+          pip install --upgrade pip
           if [ -f requirements-dev.txt ]; then pip install -r requirements-dev.txt; fi
+
       - name: Run diagnostics and remediation
         id: diag
         env:
@@ -76,6 +84,7 @@ jobs:
           set -euo pipefail
           python scripts/diagnose_and_fix.py || true
           # The script writes "HEALED" or "UNHEALED" into ./heal_status.txt
+
       - name: Upload diagnostics artifacts
         if: always()
         uses: actions/upload-artifact@v4
@@ -86,22 +95,18 @@ jobs:
             heal_status.txt
             run_output.log
             # include any other logs the script might produce
-      - name: null
-        Take action: rerun or open issue
+
+      - name: Take action rerun or open issue
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           RUN_ID: ${{ github.run_id }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
-        run: >
+        run: |
           set -euo pipefail
-
           STATUS=$(cat heal_status.txt || echo UNHEALED)
-
           echo "Heal status => $STATUS"
-
           # Prevent infinite reruns: only allow rerun if this is a first attempt (run_attempt == 1)
-
           if [ "$STATUS" = "HEALED" ]; then
             if [ "${RUN_ATTEMPT:-1}" -lt 3 ]; then
               echo "Requesting workflow rerun (attempt ${RUN_ATTEMPT})..."
