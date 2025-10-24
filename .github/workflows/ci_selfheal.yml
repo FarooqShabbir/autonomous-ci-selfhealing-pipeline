@@ -39,7 +39,7 @@ jobs:
         run: |
           set -o pipefail
           echo "Running simulate_app.py..."
-          python simulate_app.py 2>&1 | tee run_output.log || true
+          python simulate_app.py 2>&1 | tee run_output.log
           if [ "${PIPESTATUS[0]}" -eq 0 ]; then
             echo "result=success" >> $GITHUB_OUTPUT
           else
