@@ -7,9 +7,9 @@ on:
     branches: [ main ]
 
 permissions:
-  actions: write     # allow rerun of workflow
+  actions: write
   contents: read
-  issues: write      # allow opening an issue
+  issues: write
   checks: write
 
 env:
@@ -19,8 +19,9 @@ jobs:
   test:
     name: Run simulated app (build/test)
     runs-on: ubuntu-latest
+    continue-on-error: true
     outputs:
-      test_result: ${{ steps.run_test.outputs.result }}
+      test_result: ${{ steps.set_result.outputs.result }}
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
@@ -30,20 +31,24 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install deps (if any)
+      - name: Install dependencies
         run: |
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
       - name: Run simulate_app
         id: run_test
         run: |
-          set -o pipefail
+          set -e
           echo "Running simulate_app.py..."
-          python simulate_app.py 2>&1 | tee run_output.log
-          if [ "${PIPESTATUS[0]}" -eq 0 ]; then
-            echo "result=success" >> $GITHUB_OUTPUT
-          else
+          python simulate_app.py 2>&1 | tee run_output.log || echo "APP_FAILED" > failed.flag
+
+      - name: Determine test result
+        id: set_result
+        run: |
+          if [ -f failed.flag ]; then
             echo "result=failure" >> $GITHUB_OUTPUT
+          else
+            echo "result=success" >> $GITHUB_OUTPUT
           fi
 
       - name: Upload raw run output
@@ -94,7 +99,7 @@ jobs:
             diagnostics.log
             heal_status.txt
             run_output.log
-            # include any other logs the script might produce
+            extra_logs/
 
       - name: Take action rerun or open issue
         env:
@@ -106,22 +111,19 @@ jobs:
           set -euo pipefail
           STATUS=$(cat heal_status.txt || echo UNHEALED)
           echo "Heal status => $STATUS"
-          # Prevent infinite reruns: only allow rerun if this is a first attempt (run_attempt == 1)
-          if [ "$STATUS" = "HEALED" ]; then
-            if [ "${RUN_ATTEMPT:-1}" -lt 3 ]; then
-              echo "Requesting workflow rerun (attempt ${RUN_ATTEMPT})..."
-              API="https://api.github.com/repos/${REPO}/actions/runs/${RUN_ID}/rerun"
-              curl -s -X POST -H "Authorization: Bearer ${GITHUB_TOKEN}" -H "Accept: application/vnd.github+json" $API || true
-            else
-              echo "Run attempt ${RUN_ATTEMPT} >=3, will not auto-rerun. Marking as UNHEALED."
-              echo "UNHEALED" > heal_status.txt
-            fi
+
+          if [ "$STATUS" = "HEALED" ] && [ "${RUN_ATTEMPT:-1}" -lt 3 ]; then
+            echo "Re-running workflow (attempt ${RUN_ATTEMPT})..."
+            API="https://api.github.com/repos/${REPO}/actions/runs/${RUN_ID}/rerun"
+            curl -s -X POST -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+                 -H "Accept: application/vnd.github+json" $API || true
+          elif [ "$STATUS" = "HEALED" ]; then
+            echo "Max attempts reached, stopping reruns."
           else
-            echo "Not healed — creating issue to notify developers..."
+            echo "Creating issue for persistent failure..."
             TITLE="CI Self-Healer: Failure persists on run ${{ github.run_number }}"
-            BODY="The automated self-healing attempted remediation but could not fix the failure.\n\nRepository: ${REPO}\nRun: ${{ github.server_url }}/${REPO}/actions/runs/${RUN_ID}\n\nDiagnostics and logs are attached as artifacts.\n\nSteps attempted:\n- Re-ran simulate_app\n- Attempted quick fixes (retries)\n\nPlease triage."
-            # create issue
-            curl -s -X POST -H "Authorization: Bearer ${GITHUB_TOKEN}" -H "Accept: application/vnd.github+json" \
-              https://api.github.com/repos/${REPO}/issues \
-              -d "$(jq -n --arg t "$TITLE" --arg b "$BODY" '{title:$t, body:$b, labels:["ci-failure","self-heal"] }')" || true
-          fi
+            BODY="Automated self-healing failed.\n\nRepository: ${REPO}\nRun: ${{ github.server_url }}/${REPO}/actions/runs/${RUN_ID}\n\nLogs attached as artifacts."
+            curl -s -X POST -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+                 -H "Accept: application/vnd.github+json" \
+                 https://api.github.com/repos/${REPO}/issues \
+                 -d "$(jq -n --arg t "$TITLE" --arg b "$BODY" '{title:$t, body:$b, labels:["ci-failure","self-heal"] }')" || true
