@@ -1,5 +1,3 @@
-# autonomous-ci-selfhealing-pipeline
-
 # CI Self-Healer (Demo)
 
 This repository demonstrates an autonomous CI pipeline for a synthetic application (`simulate_app.py`).
